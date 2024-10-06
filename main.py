@@ -3,11 +3,24 @@ import aiosqlite
 import hashlib
 import os
 
+# Configuration for channel and role IDs
+CHANNELS = {
+    "verification": 1287851473551495259,  # Channel ID for verification notifications
+    "log": 1290308826020712500  # Log channel ID for actions
+}
+
+ROLES = {
+    "verified": 1289720252048867338,  # Role ID to assign after verification
+    "admin": 1289730759086837882  # Role ID for admins who can approve/reject
+}
+
 FILES_DIR = "files"
 
+# Ensure the directory exists for saving files
 if not os.path.exists(FILES_DIR):
     os.makedirs(FILES_DIR)
 
+# Database initialization
 async def create_db():
     async with aiosqlite.connect('verifications.db') as db:
         await db.execute("""
@@ -23,18 +36,23 @@ async def create_db():
         """)
         await db.commit()
 
+# Initialize the bot with all intents
 bot = discord.Bot(intents=discord.Intents.all())
 
+# Helper function to generate file hash
 def get_file_hash(file_content):
     return hashlib.sha256(file_content).hexdigest()
 
+# Check if the file is already saved
 def check_for_duplicate_file(file_hash):
     return os.path.exists(os.path.join(FILES_DIR, file_hash))
 
+# Save file to the directory
 def save_file(file_content, file_hash):
     with open(os.path.join(FILES_DIR, file_hash), "wb") as f:
         f.write(file_content)
 
+# Event listener for messages to handle file attachments
 @bot.event
 async def on_message(message):
     if message.attachments:
@@ -44,10 +62,11 @@ async def on_message(message):
 
             if check_for_duplicate_file(file_hash):
                 await message.delete()
-                print("Video Deleted!")
+                print("Duplicate video deleted!")
             else:
                 save_file(file_content, file_hash)
 
+# Custom view with a persistent verification button
 class MyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -61,32 +80,35 @@ class MyView(discord.ui.View):
             result = await cursor.fetchone()
 
         if result is not None:
-            await interaction.response.send_message("You have already submitted a form and cannot do it again.", ephemeral=True)
+            await interaction.response.send_message("You have already submitted a form.", ephemeral=True)
         else:
             await interaction.response.send_modal(MyModal())
 
+# Modal for verification form
 class MyModal(discord.ui.Modal):
     def __init__(self) -> None:
-        super().__init__(title="Verification")
+        super().__init__(title="Verification Form")
 
         self.add_item(discord.ui.InputText(label="Your age", max_length=2, min_length=2))
         self.add_item(discord.ui.InputText(label="How did you learn about furries?", max_length=512))
-        self.add_item(discord.ui.InputText(label="Tell us about yourself", max_length=512, placeholder="Hobbies, interests, books, movies, facts, dreams, plans", style=discord.InputTextStyle.multiline))
-        self.add_item(discord.ui.InputText(label="What is your goal in joining the server?", max_length=512))
-        self.add_item(discord.ui.InputText(label="How did you learn about the server?", max_length=512, placeholder="Mention a friend or site. If it’s a partnership, where from?"))
-        
+        self.add_item(discord.ui.InputText(label="Tell us about yourself", max_length=512, placeholder="Hobbies, interests, dreams", style=discord.InputTextStyle.multiline))
+        self.add_item(discord.ui.InputText(label="Goal in joining the server", max_length=512))
+        self.add_item(discord.ui.InputText(label="How did you hear about the server?", max_length=512, placeholder="Friend, website, etc."))
+
     async def callback(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         
+        # Check for special characters in the input
         for child in self.children[1:5]:
             if any(char in child.value for char in ['﷽', '𒐫', '⸻', '꧅']):
-                await interaction.response.send_message("The form is incorrectly filled out.", ephemeral=True)
+                await interaction.response.send_message("Form incorrectly filled.", ephemeral=True)
                 return
         
         if not self.children[0].value.isdigit():
-            await interaction.response.send_message("Your age must contain only numbers.", ephemeral=True)
+            await interaction.response.send_message("Age must contain only numbers.", ephemeral=True)
             return
 
+        # Create embed with form details
         embed = discord.Embed(
             title="New Form Submission!",
             description=f"""Basic Information:
@@ -98,20 +120,24 @@ class MyModal(discord.ui.Modal):
         )
         embed.add_field(name="Your Age", value=self.children[0].value)
         embed.add_field(name="How did you learn about furries?", value=self.children[1].value)
-        embed.add_field(name="Tell us a little about yourself", value=self.children[2].value)
+        embed.add_field(name="Tell us about yourself", value=self.children[2].value)
         embed.add_field(name="Goal in joining the server", value=self.children[3].value)
-        embed.add_field(name="How did you learn about the server?", value=self.children[4].value)
+        embed.add_field(name="How did you hear about the server?", value=self.children[4].value)
         embed.set_footer(text=f"ID: {interaction.user.id}")
         
-        channel_id = 1287851473551495259
-        channel = bot.get_channel(channel_id)
-        await channel.send(content="<@&1289730759086837882>", embeds=[embed], view=ActionButtons(user_id=interaction.user.id))  # Send the embed with action buttons
+        channel = bot.get_channel(CHANNELS['verification'])
+        await channel.send(content=f"<@&{ROLES['admin']}>", embeds=[embed], view=ActionButtons(user_id=interaction.user.id))
+        
         async with aiosqlite.connect('verifications.db') as db:
-            await db.execute("INSERT OR REPLACE INTO verifications (user_id, age, furry_intro, server_visited, goal, source, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')", 
-                             (user_id, self.children[0].value, self.children[1].value, self.children[2].value, self.children[3].value, self.children[4].value))
+            await db.execute("""
+                INSERT OR REPLACE INTO verifications (user_id, age, furry_intro, server_visited, goal, source, status) 
+                VALUES (?, ?, ?, ?, ?, ?, 'pending')""",
+                (user_id, self.children[0].value, self.children[1].value, self.children[2].value, self.children[3].value, self.children[4].value))
             await db.commit()
-        await interaction.response.send_message("Your form has been successfully submitted for verification.", ephemeral=True)
 
+        await interaction.response.send_message("Form successfully submitted.", ephemeral=True)
+
+# Buttons for admins to accept/reject forms
 class ActionButtons(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=None)
@@ -121,16 +147,17 @@ class ActionButtons(discord.ui.View):
     async def accept_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
-        if 1289730759086837882 not in [role.id for role in interaction.user.roles]:
-            await interaction.followup.send("You do not have permission to do this.", ephemeral=True)
+        # Check if user has the admin role
+        if ROLES['admin'] not in [role.id for role in interaction.user.roles]:
+            await interaction.followup.send("You don't have permission.", ephemeral=True)
             return
         
         guild = interaction.guild
         member = guild.get_member(self.user_id)
-        verified_role = guild.get_role(1289720252048867338)
+        verified_role = guild.get_role(ROLES['verified'])
         await member.add_roles(verified_role)
-        
-        log_channel = bot.get_channel(1290308826020712500)
+
+        log_channel = bot.get_channel(CHANNELS['log'])
         embed = discord.Embed(
             title="Form Accepted",
             description=f"**User:** <@{self.user_id}> has been verified.",
@@ -142,7 +169,7 @@ class ActionButtons(discord.ui.View):
         async with aiosqlite.connect('verifications.db') as db:
             await db.execute("UPDATE verifications SET status = ? WHERE user_id = ?", ('accepted', self.user_id))
             await db.commit()
-        
+
         try:
             await member.send("Your form has been accepted! Welcome to the server!")
         except discord.Forbidden:
@@ -152,8 +179,8 @@ class ActionButtons(discord.ui.View):
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
     async def reject_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if 1289730759086837882 not in [role.id for role in interaction.user.roles]:
-            await interaction.response.send_message("You do not have permission to do this.", ephemeral=True)
+        if ROLES['admin'] not in [role.id for role in interaction.user.roles]:
+            await interaction.response.send_message("You don't have permission.", ephemeral=True)
             return
         
         await interaction.response.send_modal(RejectModal(self.user_id))
@@ -166,7 +193,7 @@ class RejectModal(discord.ui.Modal):
 
     async def callback(self, interaction: discord.Interaction):
         reason = self.children[0].value
-        log_channel = bot.get_channel(1290308826020712500)
+        log_channel = bot.get_channel(CHANNELS['log'])
         embed = discord.Embed(
             title="Form Rejected",
             description=f"**User:** <@{self.user_id}> form was rejected.",
@@ -179,7 +206,7 @@ class RejectModal(discord.ui.Modal):
         async with aiosqlite.connect('verifications.db') as db:
             await db.execute("UPDATE verifications SET status = ? WHERE user_id = ?", ('rejected', self.user_id))
             await db.commit()
-        
+
         guild = interaction.guild
         member = guild.get_member(self.user_id)
         try:
@@ -191,25 +218,41 @@ class RejectModal(discord.ui.Modal):
 
         await interaction.response.send_message(f"Form rejected. Reason: {reason}", ephemeral=True)
 
+# Bot on_ready event to set up the database and persistent views
 @bot.event
 async def on_ready():
     await create_db()
     bot.add_view(MyView())
-    print(f"We have logged in as {bot.user}")
+    print(f"Logged in as {bot.user}")
 
+# Slash command to send the verification message with a selectable channel option
 @bot.slash_command(guild_ids=[1265987613303509024])
 @discord.default_permissions(administrator=True)
-async def send_verify_message(ctx):
-    channel_id = 1289730461945561180
-    channel = bot.get_channel(channel_id)
-    if channel is not None:
-        embed = discord.Embed(
-            title="FURRIFICATION",
-            description="""**~ Hello, furry!** :sparkles:
-Please fill out the short form below and be patient while it is reviewed. It might take a little while. We will message you when your form is accepted or, if something goes wrong, rejected.""",
-            color=discord.Colour.blurple(),
-        )
-        await channel.send("@everyone", embed=embed, view=MyView())
-        await ctx.response.send_message("Message sent!", ephemeral=True)
+async def send_verify_message(
+    ctx: discord.ApplicationContext,
+    channel: discord.Option(
+        discord.TextChannel,
+        description="Select the channel to send the verification message",
+        required=True
+    )
+):
+    """
+    Command to send a verification message to the selected text channel.
+    """
+    # Creating the embed for the verification message
+    embed = discord.Embed(
+        title="FURRIFICATION",
+        description="""**~ Hello, furry!** :sparkles:
+        Please fill out the short form below and be patient while it is reviewed. 
+        We will message you when your form is accepted or rejected.""",
+        color=discord.Colour.blurple(),
+    )
+    
+    # Sending the message to the selected channel
+    await channel.send("@everyone", embed=embed, view=MyView())
+    
+    # Confirmation to the admin
+    await ctx.respond(f"Verification message sent to {channel.mention}!", ephemeral=True)
 
-bot.run("Token here")
+# Run the bot with the token
+bot.run("TOKENHERE")
